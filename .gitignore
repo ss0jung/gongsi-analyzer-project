@@ -1,0 +1,25 @@
+# Python
+/venv/
+__pycache__/
+*.pyc
+
+# Java / Gradle
+.gradle/
+build/
+out/
+
+# IDE
+.idea/
+*.iml
+
+# OS
+.DS_Store
+
+# Log files
+*.log
+
+# 민감 정보 파일
+application-secret.yml
+
+# 빌드 결과물 및 데이터 디렉터리
+gongsi-analyzer/disclosures_data/
