@@ -27,14 +27,26 @@ springdoc:
   # API 문서(JSON)의 경로를 /api-docs로 설정
   api-docs:
     path: /api-docs
-
   # API 기본 정보 설정 (Swagger UI 상단에 표시됨)
   info:
     title: "공시 분석기 (Gongsi Analyzer) API"
     description: "DART 공시 데이터를 인덱싱하고 검색하는 기능을 제공하는 API 문서입니다."
     version: "v1.0.0"
-
   # API 서버 정보 설정
   servers:
     - url: http://localhost:8080
       description: 로컬 개발 서버
+
+logging:
+  file:
+    name: logs/app.log
+  level:
+    root: INFO
+    com.sjproject : DEBUG
+
+external:
+  api:
+    fast:
+      url: http://localhost:8000
+    dart:
+      url: https://opendart.fss.or.kr/api

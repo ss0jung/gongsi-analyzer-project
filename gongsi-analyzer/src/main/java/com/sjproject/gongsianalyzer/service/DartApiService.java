@@ -23,7 +23,7 @@ import reactor.core.publisher.Mono;
 
 @Slf4j
 @Service
-public class DartService {
+public class DartApiService {
 
   @Value("${dart.api.key}")
   private String dartApiKey;
@@ -35,7 +35,7 @@ public class DartService {
   private final WebClient dartApiWebClient;
   private final WebClient fileDownloadWebClient;
 
-  public DartService(@Qualifier("dartApiWebClient") WebClient dartApiWebClient, @Qualifier("fileDownloadWebClient") WebClient fileDownloadWebClient) {
+  public DartApiService(@Qualifier("dartApiWebClient") WebClient dartApiWebClient, @Qualifier("fileDownloadWebClient") WebClient fileDownloadWebClient) {
     this.dartApiWebClient = dartApiWebClient;
     this.fileDownloadWebClient = fileDownloadWebClient;
   }

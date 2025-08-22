@@ -1,78 +1,127 @@
 package com.sjproject.gongsianalyzer.controller;
 
-import com.sjproject.gongsianalyzer.service.DartService;
+import com.sjproject.gongsianalyzer.dto.ApiResponse;
+import com.sjproject.gongsianalyzer.dto.DisclosureSearchRequestDto;
+import com.sjproject.gongsianalyzer.dto.IndexingRequestDto;
+import com.sjproject.gongsianalyzer.dto.QueryRequestDto;
+import com.sjproject.gongsianalyzer.dto.DisclosureSearchResponseDto;
+import com.sjproject.gongsianalyzer.entity.Company;
+import com.sjproject.gongsianalyzer.service.CompanyService;
+import com.sjproject.gongsianalyzer.service.DartApiService;
 import com.sjproject.gongsianalyzer.service.IndexingService;
-import org.springframework.beans.factory.annotation.Autowired;
+import com.sjproject.gongsianalyzer.service.QueryService;
+import jakarta.validation.Valid;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Optional;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import reactor.core.publisher.Mono;
 
-import java.nio.file.Path;
-import java.util.Map;
-import java.util.Optional;
-
-/**
- * 공시 데이터 인덱싱을 위한 API 엔드포인트를 제공하는 컨트롤러
- */
 @RestController
-@RequestMapping("/api/disclosures")
+@RequestMapping("/api/v1")
+@Slf4j // Lombok 로깅
 public class DisclosureController {
 
-  // 의존성 주입: Spring이 해당 타입의 Bean을 자동으로 주입합니다.
-  private final DartService dartService;
+  private final DartApiService dartApiService;
   private final IndexingService indexingService;
+  private final QueryService queryService;
+  private final CompanyService companyService;
 
-  // 생성자 주입을 사용하는 것이 @Autowired 필드 주입보다 권장됩니다.
-  @Autowired
-  public DisclosureController(DartService dartService, IndexingService indexingService) {
-    this.dartService = dartService;
+  public DisclosureController(
+      DartApiService dartApiService,
+      IndexingService indexingService,
+      QueryService queryService,
+      CompanyService companyService) {
+    this.dartApiService = dartApiService;
     this.indexingService = indexingService;
+    this.queryService = queryService;
+    this.companyService = companyService;
   }
 
   /**
-   * 인덱싱 프로세스를 시작하는 POST API
-   * @param payload JSON 요청 본문 (예: {"rceptNo": "20240315000559"})
-   * @return 작업 결과에 대한 HTTP 응답
+   * 기업명 검색 시, 자동 완성
+   * */
+  @GetMapping("/search/companies")
+  public ResponseEntity<List<Company>> searchCompanies(@RequestParam("query") String query){
+    List<Company> companies = companyService.searchByCorpName(query);
+    return  ResponseEntity.ok(companies);
+  }
+
+  /**
+   * 공시 검색
    */
-  @PostMapping("/indexing")
-  public ResponseEntity<String> startIndexing(@RequestBody Map<String, String> payload) {
-    // 1. 요청 본문에서 'rceptNo'(접수번호) 추출 및 유효성 검사
-    String rceptNo = payload.get("rceptNo");
-    if (rceptNo == null || rceptNo.isBlank()) {
-      return ResponseEntity.badRequest().body("요청 실패: 접수번호(rceptNo)는 필수 항목입니다.");
-    }
+  @PostMapping("/search")
+  public ResponseEntity<List<DisclosureSearchResponseDto>> searchDisclosures(
+      @Valid @RequestBody DisclosureSearchRequestDto request) {
+
+    log.info("공시 검색 요청: 기업코드={}, 기간={}~{}, 공시유형={}",
+        request.getCorpCode(), request.getBeginDe(), request.getEndDe(), request.getPblntfTy());
 
     try {
-      // 2. DartService를 호출하여 공시 데이터 다운로드 시도
-      System.out.println("접수번호 [" + rceptNo + "] 공시 데이터 다운로드를 시작합니다.");
-      Optional<Path> optionalFilePath = dartService.downloadDisclosure(rceptNo);
+      List<DisclosureSearchResponseDto> results = dartApiService.searchDisclosures(request);
 
-      // 3. 다운로드 성공 여부 확인 (실패 우선 처리)
-      if (optionalFilePath.isEmpty()) {
-        String errorMessage = "처리 실패: 공시 문서를 다운로드할 수 없습니다. 접수번호를 확인하거나 DART API 상태를 점검해주세요. (접수번호: " + rceptNo + ")";
-        System.err.println(errorMessage);
-        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(errorMessage);
-      }
+      log.info("검색 완료: {} 건의 공시를 찾았습니다.", results.size());
 
-      // 4. 다운로드 성공 시에만 인덱싱 서비스 호출
-      Path filePath = optionalFilePath.get();
-      System.out.println("다운로드 성공: " + filePath);
-      System.out.println("파일 인덱싱을 시작합니다...");
-//      indexingService.runIndexing(filePath);
-
-      String successMessage = "접수번호 [" + rceptNo + "]에 대한 인덱싱이 성공적으로 완료되었습니다.";
-      System.out.println(successMessage);
-      return ResponseEntity.ok(successMessage);
+      return ResponseEntity.ok(results);
 
     } catch (Exception e) {
-      // 5. 그 외 예외 발생 시 서버 오류 응답
-      String errorMessage = "인덱싱 처리 중 서버 내부 오류가 발생했습니다: " + e.getMessage();
-      System.err.println(errorMessage);
-      e.printStackTrace();
-      return ResponseEntity.internalServerError().body(errorMessage);
+      log.error("공시 검색 실패", e);
+      return ResponseEntity.internalServerError().build();
     }
   }
+
+  /**
+  * 공시보고서 전처리 + 요약본
+  * */
+  @PostMapping("/index")
+  public ResponseEntity<ApiResponse> startIndexing(@Valid @RequestBody IndexingRequestDto request) {
+    String rceptNo = request.getRceptNo();
+
+    try {
+      log.info("접수번호 [{}] 공시 데이터 다운로드 시작", rceptNo);
+
+      Optional<Path> optionalFilePath = dartApiService.downloadDisclosure(rceptNo);
+
+      if (optionalFilePath.isEmpty()) {
+        log.warn("공시 문서 다운로드 실패: {}", rceptNo);
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+            .body(ApiResponse.error("공시 문서를 찾을 수 없습니다"));
+      }
+
+      Path filePath = optionalFilePath.get();
+      indexingService.triggerIndexingApi(filePath);
+      log.info("접수번호 [{}] 인덱싱 완료", rceptNo);
+
+      return ResponseEntity.ok(ApiResponse.success("인덱싱이 완료되었습니다", null));
+
+    } catch (Exception e) {
+      log.error("인덱싱 처리 중 오류 발생: {}", e.getMessage(), e);
+      return ResponseEntity.internalServerError()
+          .body(ApiResponse.error("서버 내부 오류가 발생했습니다"));
+    }
+  }
+
+  /**
+  * 질문 처리 및 답변 반환
+  * */
+  @PostMapping("/query")
+  public Mono<ResponseEntity<ApiResponse>> getAnswer(@Valid @RequestBody QueryRequestDto request) {
+    return queryService.getAnswerFromPython(request.getQuestion())
+        .map(result -> ResponseEntity.ok(ApiResponse.success("RAG 답변 생성 완료", result)))
+        .onErrorResume(e -> {
+          log.error("질문 처리 중 오류: {}", e.getMessage(), e);
+          return Mono.just(ResponseEntity.internalServerError()
+              .body(ApiResponse.error("답변 생성 중 오류가 발생했습니다")));
+        });
+  }
+
+
 }

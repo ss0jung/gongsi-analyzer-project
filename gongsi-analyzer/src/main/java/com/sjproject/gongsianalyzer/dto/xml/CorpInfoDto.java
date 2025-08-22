@@ -4,7 +4,7 @@ import jakarta.xml.bind.annotation.XmlElement;
 import jakarta.xml.bind.annotation.XmlRootElement;
 
 @XmlRootElement(name="list")
-public class CorpInfo {
+public class CorpInfoDto {
   private String corpCode;
   private String corpName;
   private String stockCode;

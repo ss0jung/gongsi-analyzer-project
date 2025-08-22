@@ -1,0 +1,30 @@
+body {
+    font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, 'Helvetica Neue', 'Segoe UI', 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', sans-serif;
+    background-color: #f9fafb; /* gray-50, for a very light background */
+}
+.hero-section {
+    background: white;
+}
+.btn-primary {
+    background-color: #0070f3; /* A bright, friendly blue */
+    color: white;
+    transition: background-color 0.2s;
+}
+.btn-primary:hover {
+    background-color: #0056d1;
+}
+.focus-ring:focus-within {
+    box-shadow: 0 0 0 4px rgba(0, 112, 243, 0.2);
+    border-color: #0070f3;
+}
+.filters-container {
+    transition: all 0.4s cubic-bezier(0.25, 0.8, 0.25, 1);
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+}
+.filters-container.open {
+    max-height: 500px;
+    opacity: 1;
+    margin-top: 1rem;
+}
