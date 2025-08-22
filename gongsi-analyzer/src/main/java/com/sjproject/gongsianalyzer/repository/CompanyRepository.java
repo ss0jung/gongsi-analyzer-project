@@ -1,5 +1,4 @@
 package com.sjproject.gongsianalyzer.repository;
 
-public class DisclosureRepository {
-
+public interface CompanyRepository {
 }

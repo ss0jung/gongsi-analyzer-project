@@ -1,5 +1,4 @@
 package com.sjproject.gongsianalyzer.entity;
 
-public class Disclosure {
-
+public class Company {
 }

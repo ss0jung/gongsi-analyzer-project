@@ -1,5 +1,4 @@
 package com.sjproject.gongsianalyzer.dto;
 
-public class QnaDto {
-
+public class ApiResponse {
 }
