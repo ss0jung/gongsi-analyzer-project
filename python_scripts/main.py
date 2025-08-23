@@ -1,184 +1,249 @@
-import os
-from fastapi import FastAPI, HTTPException, APIRouter
-from pydantic import BaseModel
-from bs4 import BeautifulSoup
-from langchain_experimental.text_splitter import SemanticChunker
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain_community.vectorstores import Chroma
-from langchain.prompts import ChatPromptTemplate
-from langchain.schema.runnable import RunnableLambda, RunnablePassthrough
-from langchain.schema.output_parser import StrOutputParser
-from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+import uvicorn
+from contextlib import asynccontextmanager
+import logging
+from datetime import datetime
 
-# --- .env 파일에서 환경변수 로드 ---
-load_dotenv()
+from config import settings
+from api import documents, query
 
-# --- OpenAI API 키 설정 ---
-openai_api_key = os.getenv("OPENAI_API_KEY")
-if not openai_api_key:
-    raise ValueError("OPENAI_API_KEY가 .env 파일에 설정되지 않았습니다.")
-
-# --- FastAPI 앱 초기화 ---
-app = FastAPI()
-
-# --- API v1 라우터 생성 ---
-api_v1_router = APIRouter(prefix="/api/v1", tags=["v1"])
-
-# --- 전역 변수 설정 ---
-CHROMA_DB_PATH = "./chroma_db"
-EMBEDDING_MODEL_NAME = "text-embedding-3-small"
-LLM_MODEL_NAME = "gpt-5"
+# 로깅 설정
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 
-# --- Pydantic 데이터 모델 정의 ---
-class IndexingRequest(BaseModel):
-    file_path: str
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """애플리케이션 시작/종료 시 실행"""
 
+    # 시작 시
+    logger.info("🚀 공시 분석 AI API 서버 시작")
+    logger.info(f"📊 OpenAI Model: {settings.OPENAI_MODEL}")
+    logger.info(f"🔗 Embedding Model: {settings.EMBEDDING_MODEL}")
+    logger.info(f"💾 ChromaDB: {settings.CHROMA_PERSIST_DIR}")
 
-# --- Q&A 요청을 위한 데이터 모델
-class QueryRequest(BaseModel):
-    question: str
-
-
-# --- 인덱싱 파이프라인 구성 요소 ---
-def validate_file(file_path: str) -> str:
-    print(f"1. 파일 검증: {file_path}")
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"오류: 파일이 존재하지 않습니다. - {file_path}")
-    return file_path
-
-
-def parse_xml(file_path: str) -> str:
-    print("2. XML 파일 파싱 시작...")
-    with open(file_path, "r", encoding="utf-8") as f:
-        soup = BeautifulSoup(f, "lxml-xml")
-    text_content = soup.get_text(separator="\n", strip=True)
-    if not text_content:
-        raise ValueError("오류: XML 파일에서 텍스트를 추출할 수 없습니다.")
-    print("XML에서 텍스트 추출 완료.")
-    return text_content
-
-
-def get_embeddings_model():
-    """임베딩 모델 인스턴스 반환"""
-    return OpenAIEmbeddings(model=EMBEDDING_MODEL_NAME, api_key=openai_api_key)
-
-
-def semantic_chunk(inputs: dict) -> list:
-    text_content = inputs["text"]
-    embeddings_model = inputs["embeddings"]
-    print("4. Semantic Chunker로 의미 기반 청킹 시작...")
-    semantic_chunker = SemanticChunker(
-        embeddings_model,
-        breakpoint_threshold_type="percentile",
-        breakpoint_threshold_amount=95,
-    )
-    documents = semantic_chunker.create_documents([text_content])
-    print(f"총 {len(documents)}개의 의미 기반 청크 생성 완료.")
-    return documents
-
-
-def store_in_chroma(inputs: dict) -> str:
-    documents = inputs["documents"]
-    embeddings_model = inputs["embeddings"]
-    print("5. ChromaDB에 임베딩 및 저장 시작...")
-    Chroma.from_documents(
-        documents=documents,
-        embedding=embeddings_model,
-        persist_directory=CHROMA_DB_PATH,
-    )
-    print("6. 모든 작업 완료.")
-    return "인덱싱이 성공적으로 완료되었습니다."
-
-
-# --- 인덱싱 파이프라인 생성 ---
-def create_indexing_pipeline():
-    return (
-        RunnableLambda(validate_file)
-        | RunnableLambda(parse_xml)
-        | RunnableLambda(
-            lambda text: {"text": text, "embeddings": get_embedings_model()}
-        )
-        | RunnableLambda(semantic_chunk)
-        | RunnableLambda(
-            lambda docs: {"documents": docs, "embeddings": get_embeddings_model()}
-        )
-        | RunnableLambda(store_in_chroma)
-    )
-
-
-# --- RAG 파이프라인 생성 ---
-def create_rag_pipeline():
-    """RAG Q&A 파이프라인 생성"""
-
-    # 1. ChromaDB에서 VectorStore를 로드하고 Retriever를 생성
-    # Retriever는 질문과 유사한 문서를 검색하는 역할을 합니다.
-    vectorstore = Chroma(
-        persist_directory=CHROMA_DB_PATH, embedding_function=get_embeddings_model()
-    )
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
-
-    # 2. 프롬프트 템플릿 정의
-    # 검색된 문서(context)와 사용자 질문(question)을 LLM에 전달할 형식을 지정합니다.
-    prompt_template = """
-    주어진 컨텍스트(CONTEXT) 정보만을 사용하여 다음 질문에 대해 답변해 주세요.
-    만약 컨텍스트에 답변이 없다면, "정보를 찾을 수 없습니다."라고 답변하세요.
-
-    CONTEXT:
-    {context}
-
-    QUESTION:
-    {question}
-    """
-    prompt = ChatPromptTemplate.from_template(prompt_template)
-
-    # 3. LLM 모델 정의
-    llm = ChatOpenAI(model_name=LLM_MODEL_NAME, temperature=0, api_key=openai_api_key)
-
-    # 4. RAG 체인 구성 (LCEL)
-    # RunnablePassthrough는 입력을 그대로 다음 단계로 전달하는 역할을 합니다.
-    # retriever가 질문에 대한 문서를 검색하고, 이 문서들이 {context}로,
-    # 원본 질문이 {question}으로 프롬프트에 전달됩니다.
-    rag_chain = (
-        {"context": retriever, "question": RunnablePassthrough()}
-        | prompt
-        | llm
-        | StrOutputParser()  # LLM의 답변(ChatMessage)을 문자열로 파싱
-    )
-
-    return rag_chain
-
-
-# --- 전역 파이프라인 인스턴스 ---
-indexing_pipeline = create_indexing_pipeline()
-rag_pipeline = create_rag_pipeline()
-
-
-# --- API v1 엔드포인트 정의 ---
-@api_v1_router.post("/documents/index")
-async def create_index(request: IndexingRequest):
+    # ChromaDB 초기화 테스트
     try:
-        print(f"인덱싱 요청 수신: {request.file_path}")
-        result = indexing_pipeline.invoke(request.file_path)
-        return {"message": result}
+        from services.embedding_service import EmbeddingService
+
+        embedding_service = EmbeddingService()
+        stats = embedding_service.get_collection_stats()
+        logger.info(f"📈 벡터 DB 연결 성공: {stats}")
     except Exception as e:
-        print(f"오류 발생: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"❌ 벡터 DB 연결 실패: {e}")
+
+    # API 키 확인
+    required_keys = {
+        "OPENAI_API_KEY": settings.OPENAI_API_KEY,
+        "NAVER_CLIENT_ID": settings.NAVER_CLIENT_ID,
+        "NAVER_CLIENT_SECRET": settings.NAVER_CLIENT_SECRET,
+    }
+
+    for key_name, key_value in required_keys.items():
+        if not key_value:
+            logger.warning(f"⚠️  {key_name}이 설정되지 않았습니다.")
+        else:
+            logger.info(f"✅ {key_name} 설정 완료")
+
+    yield
+
+    # 종료 시
+    logger.info("🛑 공시 분석 AI API 서버 종료")
 
 
-@api_v1_router.post("/documents/query")
-async def get_answer(request: QueryRequest):
-    """사용자 질문에 대해 RAG 파이프라인을 통해 답변 생성"""
+# FastAPI 앱 생성
+app = FastAPI(
+    title=settings.APP_TITLE,
+    version=settings.APP_VERSION,
+    description="""
+    ## 📊 공시 분석 AI API
+    
+    Java 서비스에서 전처리된 공시문서를 AI로 분석하여 요약과 질의응답을 제공하는 API입니다.
+    
+    ### 주요 기능
+    - 🔍 **파일 기반 인덱싱**: Java에서 생성한 파일을 읽어 청킹, 임베딩, 자동 요약 생성
+    - 📋 **Progressive Disclosure**: 요약본 먼저 제공 → 사용자 선택에 따라 질의응답
+    - 💬 **독립적 질의응답**: 문서별 반복 가능한 질의응답 시스템
+    - 📰 **뉴스 자동 연동**: AI가 질문을 분석해서 필요시 최신 뉴스 검색
+    
+    ### 사용 흐름
+    1. **Java → 파일 생성** → **인덱싱 요청** → **요약 확인**
+    2. **사용자 선택**: 질문하기 또는 종료
+    3. **질의응답**: 필요시 반복 가능
+    
+    ### 워크플로우
+    - **인덱싱 워크플로우**: 파일 읽기 → 청킹 → 임베딩 → 요약 (독립적)
+    - **질의 워크플로우**: 질문 분석 → RAG 검색 → 뉴스 검색 → AI 답변 (독립적, 반복 가능)
+    """,
+    lifespan=lifespan,
+    debug=settings.DEBUG,
+)
+
+# CORS 미들웨어 추가
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 실제 운영에서는 특정 도메인으로 제한
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 라우터 등록 (companies 라우터 제거)
+app.include_router(documents.router)
+app.include_router(query.router)
+
+
+@app.get("/")
+async def root():
+    """API 루트 엔드포인트"""
+    return {
+        "service": "공시 분석 AI API",
+        "version": settings.APP_VERSION,
+        "status": "running",
+        "timestamp": datetime.now().isoformat(),
+        "note": "Java 서비스와 연동하여 파일 기반 문서 분석을 제공합니다.",
+        "endpoints": {
+            "documents": "/api/v1/documents - 파일 기반 인덱싱 및 요약",
+            "query": "/api/v1/query - 독립적 질의응답 시스템",
+            "docs": "/docs - Swagger API 문서",
+            "redoc": "/redoc - ReDoc API 문서",
+        },
+    }
+
+
+@app.get("/health")
+async def health_check():
+    """헬스 체크 엔드포인트"""
     try:
-        print(f"Q&A 요청 수신: {request.question}")
-        # RAG 파이프라인 실행
-        answer = rag_pipeline.invoke(request.question)
-        print(f"생성된 답변: {answer}")
-        return {"answer": answer}
+        health_status = {"api": "healthy", "timestamp": datetime.now().isoformat()}
+
+        # ChromaDB 상태 확인
+        try:
+            from services.embedding_service import EmbeddingService
+
+            embedding_service = EmbeddingService()
+            stats = embedding_service.get_collection_stats()
+            health_status["vector_db"] = {
+                "status": "healthy",
+                "total_chunks": stats.get("total_chunks", 0),
+            }
+        except Exception as e:
+            health_status["vector_db"] = {"status": "unhealthy", "error": str(e)}
+
+        # Naver News API 상태 확인
+        try:
+            from services.news_service import NaverNewsService
+
+            # 간단한 테스트 (실제 요청 없이 설정만 확인)
+            if settings.NAVER_CLIENT_ID and settings.NAVER_CLIENT_SECRET:
+                health_status["news_api"] = {"status": "configured"}
+            else:
+                health_status["news_api"] = {"status": "not_configured"}
+        except Exception as e:
+            health_status["news_api"] = {"status": "error", "error": str(e)}
+
+        # 전체 상태 결정
+        all_healthy = all(
+            (
+                service.get("status") in ["healthy", "configured"]
+                if isinstance(service, dict)
+                else service == "healthy"
+            )
+            for service in health_status.values()
+            if isinstance(service, (dict, str))
+        )
+
+        health_status["overall"] = "healthy" if all_healthy else "degraded"
+
+        return health_status
+
     except Exception as e:
-        print(f"오류 발생: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(
+            status_code=503,
+            content={
+                "overall": "unhealthy",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat(),
+            },
+        )
 
 
-# --- 라우터를 앱에 등록 ---
-app.include_router(api_v1_router)
+@app.exception_handler(404)
+async def not_found_handler(request, exc):
+    """404 에러 핸들러"""
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error": "Not Found",
+            "message": "요청하신 리소스를 찾을 수 없습니다.",
+            "path": str(request.url),
+        },
+    )
+
+
+@app.exception_handler(500)
+async def internal_error_handler(request, exc):
+    """500 에러 핸들러"""
+    logger.error(f"Internal server error: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal Server Error",
+            "message": "서버 내부 오류가 발생했습니다.",
+            "timestamp": datetime.now().isoformat(),
+        },
+    )
+
+
+@app.get("/api/v1/info")
+async def api_info():
+    """API 정보 조회"""
+    try:
+        from services.embedding_service import EmbeddingService
+
+        embedding_service = EmbeddingService()
+        stats = embedding_service.get_collection_stats()
+
+        return {
+            "service": {
+                "name": settings.APP_TITLE,
+                "version": settings.APP_VERSION,
+                "model": settings.OPENAI_MODEL,
+                "embedding_model": settings.EMBEDDING_MODEL,
+            },
+            "features": {
+                "file_based_indexing": True,
+                "separated_workflows": True,
+                "auto_news_detection": True,
+                "progressive_disclosure": True,
+            },
+            "settings": {
+                "max_summary_length": settings.SUMMARY_MAX_LENGTH,
+                "chunk_size": settings.CHUNK_SIZE,
+                "chunk_overlap": settings.CHUNK_OVERLAP,
+                "summary_timeout": f"{settings.SUMMARY_TIMEOUT}초",
+            },
+            "database": {
+                "collection_name": settings.COLLECTION_NAME,
+                "total_documents": stats.get("total_chunks", 0),
+                "persist_directory": settings.CHROMA_PERSIST_DIR,
+            },
+            "integration": {
+                "java_service": "파일 기반 연동",
+                "workflow_type": "분리형 (인덱싱 + 질의)",
+                "news_detection": "자동 판단",
+            },
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"API 정보 조회 중 오류: {str(e)}")
+
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "main:app", host="0.0.0.0", port=8000, reload=settings.DEBUG, log_level="info"
+    )
