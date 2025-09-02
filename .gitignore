@@ -15,14 +15,17 @@ out/
 
 # OS
 .DS_Store
+.claude
 
 # Log files
 *.log
-gongsi-analyzer/logs/
+analyzer-api/logs/
 
 # 민감 정보 파일
 application-secret.yml
 
 # 빌드 결과물 및 데이터 디렉터리
-gongsi-analyzer/disclosures_data/
 /chroma_db/
+/bak/
+/rag-engine/data/
+
